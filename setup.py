@@ -15,6 +15,8 @@ setup(
     packages=find_packages(),
     install_requires=[
         'AWSIoTPythonSDK~=1.2.0',
+        'docker',
+        'msgpack-python',
     ],
     entry_points={
         'console_scripts': [

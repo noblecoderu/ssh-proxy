@@ -1,14 +1,17 @@
+import enum
 import functools
 import json
 import logging
 import pathlib
-import signal
 import shutil
+import signal
 import socket
 import subprocess
+import time
 import tempfile
 import threading
 import uuid
+import zlib
 
 from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient
 import docker
@@ -16,6 +19,91 @@ import msgpack
 
 
 log = logging.getLogger(__name__)
+
+
+class Status(enum.Enum):
+    Starting = enum.auto()
+    Running = enum.auto()
+    Stopping = enum.auto()
+
+
+class Container:
+    def __init__(self, tmp_dir, docker_client, image):
+        self._real_tmp_dir = tempfile.TemporaryDirectory(dir=tmp_dir)
+        self._tmp_dir = pathlib.Path(self._real_tmp_dir.name)
+
+        self._pk_file = self._tmp_dir / 'rsa_key'
+        subprocess.check_call([
+            'ssh-keygen', '-f', self._pk_file, '-t', 'rsa', '-N', ''
+        ])
+
+        self._bind_root = self._tmp_dir / 'root'
+        auth_keys_file = self._bind_root / '.ssh' / 'authorized_keys'
+        auth_keys_file.parent.mkdir(mode=0o700, parents=True)
+        shutil.copy(self._pk_file.with_suffix('.pub'), auth_keys_file)
+
+        self._docker = docker_client
+        self._image = image
+
+        self.docker_port = None
+        self.server_port = None
+        self.container = None
+
+        self.lock = threading.Condition()
+        self.status = Status.Starting
+
+    def read_private_key(self):
+        return self._pk_file.read_bytes()
+
+    def start(self):
+        self.docker_port = get_free_port()
+        self.server_port = get_free_port()
+
+        mount = docker.types.Mount('/root', str(self._bind_root), type='bind')
+
+        self.container = self._docker.containers.run(
+            self._image,
+            auto_remove=True,
+            detach=True,
+            mounts=[mount],
+            ports={'22': self.docker_port, '2222': self.server_port}
+        )
+
+    def wait_for_start(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        while True:
+            try:
+                sock.connect(('127.0.0.1', self.docker_port))
+            except ConnectionError:
+                with self.lock:
+                    if self.status == Status.want_stop:
+                        return
+                time.sleep(1)
+            else:
+                sock.recv(1024)
+                return
+            finally:
+                sock.close()
+
+    def want_stop(self):
+        return self.status == Status.Stopping
+
+    def destroy(self):
+        self.container.stop()
+        self._real_tmp_dir.cleanup()
+
+    def info(self):
+        return {
+            'container_id': self.id,
+            'docker_port': self.docker_port,
+            'server_port': self.server_port,
+        }
+
+    @property
+    def id(self):
+        if self.container is None:
+            return None
+        return self.container.id
 
 
 def in_thread(func):
@@ -26,13 +114,15 @@ def in_thread(func):
 
 
 def json_dumps(payload):
-    return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    return json.dumps(
+        payload, ensure_ascii=False, separators=(',', ':')
+    ).encode()
 
 
 def get_free_port():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(('', 0))
-    host, port = sock.getsockname()
+    _, port = sock.getsockname()
     sock.close()
     return port
 
@@ -45,7 +135,7 @@ def wait_for_port_opens(port):
         except ConnectionError:
             time.sleep(1)
         else:
-            data = sock.recv(1024)
+            sock.recv(1024)
             return
         finally:
             sock.close()
@@ -53,32 +143,39 @@ def wait_for_port_opens(port):
 
 class Proxy:
     def __init__(self,
-                 runtime_dir: str,
-                 image_name: str,
-                 client_name: str,
+                 name: str,
                  host: str,
+                 runtime_dir: str,
+                 image: str,
+                 iot_host: str,
                  root_ca_path: str,
-                 keep_alive=1200,
-                 ):
+                 keep_alive=1200):
         """Docstring will be here..."""
-        self._iot_client = AWSIoTMQTTClient(client_name, useWebsocket=True)
-        self._iot_client.configureEndpoint(host, 443)
+        self._host = host
+
+        self.name = name
+        self._iot_client = AWSIoTMQTTClient(name, useWebsocket=True)
+        self._iot_client.configureEndpoint(iot_host, 443)
         self._iot_client.configureCredentials(root_ca_path)
         self._keep_alive = keep_alive
 
         self._stop = threading.Event()
-        self._hendlers = {
+        self._handlers = {
+            'run': self._container_run,
+            'stop': self._container_stop
         }
 
         self._runtime_dir = pathlib.Path(runtime_dir)
         self._docker = docker.from_env()
-        self._image_name = image_name
+        self._image = image
         self._lock = threading.Lock()
         self._containers = {}
 
     def _start_iot_client(self):
         self._iot_client.connect(self._keep_alive)
-        self._iot_client.subscribe('sshproxy', 1, self._iot_callback)
+        self._iot_client.subscribe(
+            f'ssh/proxy/{self.name}', 1, self._iot_callback
+        )
 
     def _stop_iot_client(self):
         self._iot_client.disconnect()
@@ -101,89 +198,101 @@ class Proxy:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
-    def signal_handler(self, signum, frame):
+    def signal_handler(self, _signum, _frame):
         self._stop.set()
 
     @in_thread
-    def _iot_callback(self, client, userdata, message):
+    def _iot_callback(self, _client, _userdata, message):
         log.debug('Got message: %s', message.payload)
-        job = json.loads(message.payload)
-        job_id = uuid.UUID(job.pop('_id'))
-        command = job.pop('command', '')
+        try:
+            job = json.loads(message.payload)
+            job_id = uuid.UUID(job.pop('_id'))
+            command = job.pop('command', '')
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/error',
+                b'Unable to parse message', 0
+            )
+            return
 
         handler = self._handlers.get(command)
         if handler is None:
             self._iot_client.publish(
-                'sshproxy/missing',
-                f'No handler for command "{command}"',
-                0
+                f'ssh/proxy/{self.name}/{job_id.hex}/error',
+                f'No handler for command "{command}"'.encode('utf-8'), 1
             )
-        handler(job_id, task)
+        try:
+            handler(job_id, job)
+        except:
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/error',
+                b'An error occurred', 1
+            )
 
-    def _container_list(self, job_id, task):
-        # TODO
-        with self._lock:
-            response = {
-                container_id: {
-                    key: value in container_data['info'].items()
-                    if key in {'',}
-                } for container_id, container_data in self._containers.items()
-            }
-        payload = json_dumps({'_id': job_id, 'result': response})
-        self._iot_client.publish('sshproxy/success', payload, 0)
+    def _container_run(self, job_id, job):
+        server = job.pop('server')
+        container = Container(self._runtime_dir, self._docker, self._image)
+        container.start()
 
-    def _container_info(self, job_id, task):
-        # TODO
-        container_id = task.pop('container_id', None)
         with self._lock:
-            if container_id in self._containers:
-                topic = 'sshproxy/success'
-                response = self._containers[container_id]
+            self._containers[container.id] = container
+
+        container.wait_for_start()
+        send_connect = True
+        with container.lock:
+            if container.status == Status.Stopping:
+                send_connect = False
             else:
-                topic = 'sshproxy/error'
-                response = {'msg': f'No container with id "{container_id}"'}
-        payload = json_dumps({'_id': job_id, 'result': response})
-        self._iot_client.publish(topic, payload, 0)
+                container.status = Status.Running
 
-    def _container_run(self, job_id, task):
+        self._iot_client.publish(
+            f'ssh/proxy/{self.name}/{job_id.hex}/success',
+            json_dumps({'type': 'started', 'data': container.info()}), 1
+        )
+
+        if send_connect:
+            private_key = container.read_private_key()
+            message = [
+                job_id.bytes,
+                1, # Client connect message
+                [
+                    private_key,
+                    'root',
+                    self._host,
+                    container.docker_port,
+                    container.server_port
+                ]
+            ]
+            payload = zlib.compress(msgpack.dumps(message))
+            self._iot_client.publish(f'ssh/server/{server}', payload, 1)
+
+            with container.lock:
+                container.lock.wait_for(container.want_stop)
+
+        id_ = container.id
         with self._lock:
-            if job_id in self._containers:
-                # TODO
-                return
+            del self._containers[id_]
+        container.destroy()
 
-            _tmp_dir = tempfile.TemporaryDirectory(
-                dir=self._runtime_dir
+        self._iot_client.publish(
+            f'ssh/proxy/{self.name}/{job_id.hex}/success',
+            json_dumps({'type': 'stopped', 'data': {'container_id': id_}}), 1
+        )
+
+    def _container_stop(self, job_id, job):
+        container_id = job.pop('container_id')
+        with self._lock:
+            container = self._containers.get(container_id)
+
+        if container is None:
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/error',
+                b'Container does not exists', 1
             )
-            tmp_dir = pathlib.Path(_tmp_dir.name)
-
-            private_key_file = tmp_dir / 'rsa_key'
-            public_key_file = tmp_dir / 'rsa_key.pub'
-            subprocess.chekc_call([
-                'ssh-keygen', '-f', private_key_file, '-t', 'rsa', '-N', ''
-            ])
-            private_key = private_key_file.read_text()
-
-            docker_root = tmp_dir / 'root'
-            docker_ssh = docker_root / '.ssh'
-            docker_ssh.mkdir(mode=0o700, parents=True)
-
-            shutil.copy(public_key_file, docker_ssh / 'authorized_keys')
-
-            docker_ssh_port = get_free_port()
-            connector_ssh_port = get_free_port()
-
-            container = self._docker.containers.run(
-                self._image_name,
-                auto_remove=True,
-                detach=True,
-                mounts=[docker.types.Mount('/root', str(docker_root), type='bind')],
-                ports={'22', docker_ssh_port, '2222': connector_ssh_port}
+        else:
+            with container.lock:
+                container.status = Status.Stopping
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/success',
+                b'Ok', 1
             )
-            self._containers[job_id] = {'container': container}
-
-            wait_for_port_opens(docker_ssh_port)
-            
-
-    def _container_stop(self, job_id, task):
-        # TODO
-        pass
