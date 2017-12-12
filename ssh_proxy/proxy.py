@@ -162,7 +162,10 @@ class Proxy:
         self._stop = threading.Event()
         self._handlers = {
             'run': self._container_run,
-            'stop': self._container_stop
+            'stop': self._container_stop,
+            'info': self._container_info,
+            'list': self._container_list,
+            'connect', self._send_connect,
         }
 
         self._runtime_dir = pathlib.Path(runtime_dir)
@@ -230,7 +233,7 @@ class Proxy:
             )
 
     def _container_run(self, job_id, job):
-        server = job.pop('server')
+        server = job.pop('server', None)
         container = Container(self._runtime_dir, self._docker, self._image)
         container.start()
 
@@ -238,7 +241,7 @@ class Proxy:
             self._containers[container.id] = container
 
         container.wait_for_start()
-        send_connect = True
+        send_connect = server is not None
         with container.lock:
             if container.status == Status.Stopping:
                 send_connect = False
@@ -295,4 +298,64 @@ class Proxy:
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/success',
                 b'Ok', 1
+            )
+
+    def _container_info(self, job_id, job):
+        container_id = job.pop('container_id')
+        with self._lock:
+            container = self._containers.get(container_id)
+
+        if container is None:
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/error',
+                b'Container does not exists', 1
+            )
+        else:
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/success',
+                json_dumps({'type': 'info', 'data': container.info()}), 1
+            )
+
+    def _container_list(self, job_id, job):
+        with self._lock:
+            data = {
+                key: container.info() for key, container in self._containers
+            }
+
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/error',
+                json_dumps({'type': 'list', 'data': data}), 1
+            )
+
+    def _send_connect(self, job_id, job):
+        container_id = job.pop('container_id')
+        server = job.pop('server')
+
+        with self._lock:
+            container = self._containers.get(container_id)
+
+        if container is None:
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/error',
+                b'Container does not exits', 1
+            )
+        else:
+            private_key = container.read_private_key()
+            message = [
+                job_id.bytes,
+                1, # Client connect message
+                [
+                    private_key,
+                    'root',
+                    self._host,
+                    container.docker_port,
+                    container.server_port
+                ]
+            ]
+            payload = zlib.compress(msgpack.dumps(message))
+            self._iot_client.publish(f'ssh/server/{server}', payload, 1)
+
+            self._iot_client.publish(
+                f'ssh/proxy/{self.name}/{job_id.hex}/success',
+                b'Connect sent', 1
             )
