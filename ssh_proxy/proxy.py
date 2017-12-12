@@ -7,9 +7,10 @@ import shutil
 import signal
 import socket
 import subprocess
-import time
+import sys
 import tempfile
 import threading
+import time
 import uuid
 import zlib
 
@@ -170,6 +171,12 @@ class Proxy:
 
         self._runtime_dir = pathlib.Path(runtime_dir)
         self._docker = docker.from_env()
+
+        try:
+            image = self._docker.images.get(image)
+        except docker.errors.ImageNotFound:
+            print('Specified image not found')
+            sys.exit(1)
         self._image = image
         self._lock = threading.Lock()
         self._containers = {}
