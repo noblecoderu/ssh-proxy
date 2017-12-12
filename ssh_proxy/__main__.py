@@ -4,7 +4,7 @@ from ssh_proxy import proxy
 
 
 def build_parser():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(argument_default=argparse.SUPPRESS)
     parser.add_argument('-n', '--client', required=True, dest='name',
                         help='Client id')
     parser.add_argument('-d', '--hostname', required=True, dest='host',

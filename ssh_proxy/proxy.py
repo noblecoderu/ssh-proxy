@@ -157,7 +157,7 @@ class Proxy:
 
         self.name = name
         self._iot_client = AWSIoTMQTTClient(name)
-        self._iot_client.configureEndpoint(iot_host, 8443)
+        self._iot_client.configureEndpoint(iot_host, 8883)
         self._iot_client.configureCredentials(root_ca_path, key_path, cert_path)
         self._keep_alive = keep_alive
 
