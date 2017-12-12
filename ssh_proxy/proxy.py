@@ -114,9 +114,7 @@ def in_thread(func):
 
 
 def json_dumps(payload):
-    return json.dumps(
-        payload, ensure_ascii=False, separators=(',', ':')
-    ).encode()
+    return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
 
 
 def get_free_port():
@@ -216,7 +214,7 @@ class Proxy:
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/error',
-                b'Unable to parse message', 0
+                'Unable to parse message', 0
             )
             return
 
@@ -224,14 +222,15 @@ class Proxy:
         if handler is None:
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/error',
-                f'No handler for command "{command}"'.encode('utf-8'), 1
+                f'No handler for command "{command}"', 1
             )
+            return
         try:
             handler(job_id, job)
         except:
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/error',
-                b'An error occurred', 1
+                'An error occurred', 1
             )
             raise
 
@@ -270,7 +269,7 @@ class Proxy:
                     container.server_port
                 ]
             ]
-            payload = zlib.compress(msgpack.dumps(message))
+            payload = bytearray(zlib.compress(msgpack.dumps(message)))
             self._iot_client.publish(f'ssh/server/{server}', payload, 1)
 
         with container.lock:
@@ -295,7 +294,7 @@ class Proxy:
         if container is None:
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/error',
-                b'Container does not exists', 1
+                'Container does not exists', 1
             )
         else:
             with container.lock:
@@ -303,7 +302,7 @@ class Proxy:
                 container.lock.notify()
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/success',
-                b'Ok', 1
+                'Ok', 1
             )
 
     def _container_info(self, job_id, job):
@@ -314,7 +313,7 @@ class Proxy:
         if container is None:
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/error',
-                b'Container does not exists', 1
+                'Container does not exists', 1
             )
         else:
             self._iot_client.publish(
@@ -343,7 +342,7 @@ class Proxy:
         if container is None:
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/error',
-                b'Container does not exits', 1
+                'Container does not exits', 1
             )
         else:
             private_key = container.read_private_key()
@@ -358,10 +357,10 @@ class Proxy:
                     container.server_port
                 ]
             ]
-            payload = zlib.compress(msgpack.dumps(message))
+            payload = bytearray(zlib.compress(msgpack.dumps(message)))
             self._iot_client.publish(f'ssh/server/{server}', payload, 1)
 
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/success',
-                b'Connect sent', 1
+                'Connect sent', 1
             )
