@@ -35,7 +35,7 @@ class Container:
         self._pk_file = self._tmp_dir / 'rsa_key'
         subprocess.check_call([
             'ssh-keygen', '-f', self._pk_file, '-t', 'rsa', '-N', ''
-        ])
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         self._bind_root = self._tmp_dir / 'root'
         auth_keys_file = self._bind_root / '.ssh' / 'authorized_keys'
