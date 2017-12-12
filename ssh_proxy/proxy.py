@@ -149,14 +149,16 @@ class Proxy:
                  image: str,
                  iot_host: str,
                  root_ca_path: str,
+                 cert_path: str,
+                 key_path: str,
                  keep_alive=1200):
         """Docstring will be here..."""
         self._host = host
 
         self.name = name
-        self._iot_client = AWSIoTMQTTClient(name, useWebsocket=True)
-        self._iot_client.configureEndpoint(iot_host, 443)
-        self._iot_client.configureCredentials(root_ca_path)
+        self._iot_client = AWSIoTMQTTClient(name)
+        self._iot_client.configureEndpoint(iot_host, 8443)
+        self._iot_client.configureCredentials(root_ca_path, key_path, cert_path)
         self._keep_alive = keep_alive
 
         self._stop = threading.Event()
@@ -165,7 +167,7 @@ class Proxy:
             'stop': self._container_stop,
             'info': self._container_info,
             'list': self._container_list,
-            'connect', self._send_connect,
+            'connect': self._send_connect,
         }
 
         self._runtime_dir = pathlib.Path(runtime_dir)
