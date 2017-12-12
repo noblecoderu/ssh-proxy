@@ -273,8 +273,8 @@ class Proxy:
             payload = zlib.compress(msgpack.dumps(message))
             self._iot_client.publish(f'ssh/server/{server}', payload, 1)
 
-            with container.lock:
-                container.lock.wait_for(container.want_stop)
+        with container.lock:
+            container.lock.wait_for(container.want_stop)
 
         log.info('Container %s stopping', container.container.short_id)
         id_ = container.id
@@ -300,6 +300,7 @@ class Proxy:
         else:
             with container.lock:
                 container.status = Status.Stopping
+                container.lock.notify()
             self._iot_client.publish(
                 f'ssh/proxy/{self.name}/{job_id.hex}/success',
                 b'Ok', 1
