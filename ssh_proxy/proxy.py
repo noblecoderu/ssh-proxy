@@ -208,7 +208,7 @@ class Proxy:
 
     @in_thread
     def _iot_callback(self, _client, _userdata, message):
-        log.debug('Got message: %s', message.payload)
+        log.info('Got message: %s', message.payload)
         try:
             job = json.loads(message.payload)
             job_id = uuid.UUID(job.pop('_id'))
@@ -233,11 +233,13 @@ class Proxy:
                 f'ssh/proxy/{self.name}/{job_id.hex}/error',
                 b'An error occurred', 1
             )
+            raise
 
     def _container_run(self, job_id, job):
         server = job.pop('server', None)
         container = Container(self._runtime_dir, self._docker, self._image)
         container.start()
+        log.info('Container %s started', container.container.short_id)
 
         with self._lock:
             self._containers[container.id] = container
@@ -274,6 +276,7 @@ class Proxy:
             with container.lock:
                 container.lock.wait_for(container.want_stop)
 
+        log.info('Container %s stopping', container.container.short_id)
         id_ = container.id
         with self._lock:
             del self._containers[id_]

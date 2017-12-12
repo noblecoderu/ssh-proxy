@@ -1,4 +1,5 @@
 import argparse
+import logging
 
 from ssh_proxy import proxy
 
@@ -27,6 +28,8 @@ def build_parser():
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+
     parser = build_parser()
     args = parser.parse_args()
     proxy_ = proxy.Proxy(**vars(args))
