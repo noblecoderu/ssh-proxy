@@ -273,7 +273,7 @@ class Proxy:
                     'root',
                     self._host,
                     container.docker_port,
-                    container.server_port
+                    2222
                 ]
             ]
             payload = bytearray(zlib.compress(msgpack.dumps(message)))
