@@ -331,7 +331,8 @@ class Proxy:
     def _container_list(self, job_id, job):
         with self._lock:
             data = {
-                key: container.info() for key, container in self._containers
+                key: container.info()
+                for key, container in self._containers.items()
             }
 
             self._iot_client.publish(
