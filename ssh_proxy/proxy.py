@@ -335,10 +335,10 @@ class Proxy:
                 for key, container in self._containers.items()
             }
 
-            self._iot_client.publish(
-                f'ssh/proxy/{self.name}/{job_id.hex}/error',
-                json_dumps({'type': 'list', 'data': data}), 1
-            )
+        self._iot_client.publish(
+            f'ssh/proxy/{self.name}/{job_id.hex}/success',
+            json_dumps({'type': 'list', 'data': data}), 1
+        )
 
     def _send_connect(self, job_id, job):
         container_id = job.pop('container_id')
