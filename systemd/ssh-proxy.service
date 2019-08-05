@@ -1,0 +1,22 @@
+[Unit]
+Description=SSH proxy for AWS IoT
+After=network.target
+
+[Service]
+Type=simple
+User=root
+RuntimeDirectory=%N
+ConfigurationDirectory=%N
+ExecStart=/opt/ssh-proxy/bin/ssh-proxy \
+	--client proxy-first \
+	--hostname sage.noblecode.ru \
+	--tmp_dir %t/%N \
+	--image anikey/ssh-proxy \
+	--endpoint a30igkrgncc446-ats.iot.eu-central-1.amazonaws.com \
+	--root-cert /etc/%N/root.crt \
+	--cert /etc/%N/proxy.crt \
+	--key /etc/%N/proxy.key \
+	--keep-alive 300
+
+[Install]
+WantedBy=multi-user.target
